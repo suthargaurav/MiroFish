@@ -90,14 +90,16 @@ class LLMClient:
             max_tokens=max_tokens,
             #response_format={"type": "json_object"}
         )
-        # 清理markdown代码块标记
-        cleaned_response = response.strip()
-        cleaned_response = re.sub(r'^```(?:json)?\s*\n?', '', cleaned_response, flags=re.IGNORECASE)
-        cleaned_response = re.sub(r'\n?```\s*$', '', cleaned_response)
-        cleaned_response = cleaned_response.strip()
+        
+        # 使用正则表达式寻找第一个 { 和最后一个 } 之间的所有内容
+        # 这样可以彻底无视模型返回的任何前后解释文本或 markdown 标签
+        match = re.search(r'\{[\s\S]*\}', response)
+        if match:
+            cleaned_response = match.group(0)
+        else:
+            cleaned_response = response.strip()
 
         try:
             return json.loads(cleaned_response)
         except json.JSONDecodeError:
             raise ValueError(f"LLM返回的JSON格式无效: {cleaned_response}")
-
