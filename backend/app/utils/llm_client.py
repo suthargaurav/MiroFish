@@ -5,6 +5,8 @@ LLM客户端封装
 
 import json
 import re
+import sys
+import traceback
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
@@ -41,15 +43,6 @@ class LLMClient:
     ) -> str:
         """
         发送聊天请求
-        
-        Args:
-            messages: 消息列表
-            temperature: 温度参数
-            max_tokens: 最大token数
-            response_format: 响应格式（如JSON模式）
-            
-        Returns:
-            模型响应文本
         """
         kwargs = {
             "model": self.model,
@@ -61,11 +54,21 @@ class LLMClient:
         if response_format:
             kwargs["response_format"] = response_format
         
-        response = self.client.chat.completions.create(**kwargs)
-        content = response.choices[0].message.content
-        # 部分模型（如MiniMax M2.5）会在content中包含<think>思考内容，需要移除
-        content = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
-        return content
+        try:
+            response = self.client.chat.completions.create(**kwargs)
+            content = response.choices[0].message.content
+            # 部分模型（如MiniMax M2.5）会在content中包含<think>思考内容，需要移除
+            content = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
+            return content
+            
+        except Exception as e:
+            # THIS FORCES THE EXACT API ERROR TO PRINT IN YOUR TERMINAL
+            print("\n" + "="*60)
+            print("💥 OPENCODE API CRASHED! HERE IS THE EXACT REASON:")
+            print(str(e))
+            print("="*60 + "\n")
+            traceback.print_exc(file=sys.stdout)
+            raise
     
     def chat_json(
         self,
@@ -75,14 +78,6 @@ class LLMClient:
     ) -> Dict[str, Any]:
         """
         发送聊天请求并返回JSON
-        
-        Args:
-            messages: 消息列表
-            temperature: 温度参数
-            max_tokens: 最大token数
-            
-        Returns:
-            解析后的JSON对象
         """
         response = self.chat(
             messages=messages,
@@ -91,8 +86,6 @@ class LLMClient:
             #response_format={"type": "json_object"}
         )
         
-        # 使用正则表达式寻找第一个 { 和最后一个 } 之间的所有内容
-        # 这样可以彻底无视模型返回的任何前后解释文本或 markdown 标签
         match = re.search(r'\{[\s\S]*\}', response)
         if match:
             cleaned_response = match.group(0)
