@@ -93,7 +93,7 @@
       <div class="action-controls">
         <button 
           class="action-btn primary"
-          :disabled="(phase !== 2 && !checkPlatformsCompleted(runStatus)) || isGeneratingReport"
+          :disabled="phase !== 2 || isGeneratingReport"
           @click="handleNextStep"
         >
           <span v-if="isGeneratingReport" class="loading-spinner-small"></span>
@@ -512,7 +512,7 @@ const fetchRunStatus = async () => {
       }
       
       // 检测模拟是否已完成（通过 runner_status 或平台完成状态判断）
-      const isCompleted = data.runner_status === 'completed' || data.runner_status === 'stopped' || checkPlatformsCompleted(data) || (data.total_rounds > 0 && data.twitter_current_round >= data.total_rounds && data.reddit_current_round >= data.total_rounds)
+      const isCompleted = data.runner_status === 'completed' || data.runner_status === 'stopped'
       const isFailed = data.runner_status === 'failed'
       
       // runner_status is authoritative because the backend only publishes a
@@ -539,9 +539,9 @@ const checkPlatformsCompleted = (data) => {
   // 如果没有任何平台数据，返回 false
   if (!data) return false
   
-  // 检查各平台的完成状态（标记完成 或 轮次已达上限）
-  const twitterCompleted = data.twitter_completed === true || (data.total_rounds > 0 && data.twitter_current_round >= data.total_rounds)
-  const redditCompleted = data.reddit_completed === true || (data.total_rounds > 0 && data.reddit_current_round >= data.total_rounds)
+  // 检查各平台的完成状态
+  const twitterCompleted = data.twitter_completed === true
+  const redditCompleted = data.reddit_completed === true
   
   // 如果至少有一个平台完成了，检查是否所有启用的平台都完成了
   // 通过 actions_count 判断平台是否被启用（如果 count > 0 或 running 曾为 true）

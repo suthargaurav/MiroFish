@@ -224,9 +224,8 @@ const handleNewProject = async () => {
       addLog(`Error generating ontology: ${error.value}`)
     }
   } catch (err) {
-    const errorMsg = err.response?.data?.error || err.message || 'Unknown error'
-    error.value = errorMsg
-    addLog(`Exception in handleNewProject: ${errorMsg}`)
+    error.value = err.message
+    addLog(`Exception in handleNewProject: ${err.message}`)
   } finally {
     loading.value = false
   }

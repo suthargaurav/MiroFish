@@ -653,19 +653,6 @@ class SimulationRunner:
                 
                 # 更新状态
                 cls._save_run_state(state)
-
-                # 检查是否所有平台都已达到目标轮次或触发 simulation_end
-                if cls._check_all_platforms_completed(state) or (
-                    state.total_rounds > 0
-                    and state.twitter_current_round >= state.total_rounds
-                    and state.reddit_current_round >= state.total_rounds
-                ):
-                    logger.info(
-                        f"所有平台模拟轮次已全部完成: {simulation_id} "
-                        f"(rounds: {state.current_round}/{state.total_rounds})"
-                    )
-                    break
-
                 time.sleep(2)
             
             # 进程结束后，最后读取一次日志
@@ -1036,7 +1023,12 @@ class SimulationRunner:
             and monitor is not threading.current_thread()
             and monitor.is_alive()
         ):
-            wait_timeout = 8.0
+            wait_timeout = max(
+                30.0,
+                ZEP_INGESTION_WAIT_TIMEOUT_SECONDS
+                + ZEP_HTTP_REQUEST_TIMEOUT_SECONDS
+                + 5,
+            )
             monitor.join(timeout=wait_timeout)
             if monitor.is_alive():
                 # The monitor still owns finalization and may be inside one

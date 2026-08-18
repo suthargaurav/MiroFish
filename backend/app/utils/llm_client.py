@@ -6,8 +6,6 @@ LLM客户端封装
 import json
 import logging
 import re
-import sys
-import traceback
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
@@ -71,13 +69,8 @@ def _clean_chat_text(content: str) -> str:
 
     cleaned = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
     cleaned = cleaned.lstrip("\ufeff")
-    if '```' in cleaned:
-        code_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', cleaned, flags=re.IGNORECASE)
-        if code_match:
-            cleaned = code_match.group(1).strip()
-        else:
-            cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned, flags=re.IGNORECASE)
-            cleaned = re.sub(r'\n?```\s*$', '', cleaned)
+    cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\n?```\s*$', '', cleaned)
     return cleaned.strip()
 
 
@@ -111,15 +104,9 @@ class LLMClient:
         if not self.api_key:
             raise ValueError("LLM_API_KEY 未配置")
         
-        headers = {}
-        if self.base_url and "openrouter.ai" in self.base_url:
-            headers["HTTP-Referer"] = "https://github.com/suthargaurav/MiroFish"
-            headers["X-Title"] = "MiroFish"
-
         self.client = OpenAI(
             api_key=self.api_key,
-            base_url=self.base_url,
-            default_headers=headers if headers else None
+            base_url=self.base_url
         )
 
     def _create_completion(
@@ -132,24 +119,14 @@ class LLMClient:
     ) -> Any:
         """Send one raw Chat Completions request through the compatibility layer."""
 
-        try:
-            return create_chat_completion(
-                self.client,
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format=response_format,
-            )
-        except Exception as e:
-            # THIS FORCES THE EXACT API ERROR TO PRINT IN YOUR TERMINAL
-            print("\n" + "="*60)
-            print("💥 OPENROUTER / LLM API ERROR:")
-            print(f"Model: {self.model} | Endpoint: {self.base_url}")
-            print(str(e))
-            print("="*60 + "\n")
-            traceback.print_exc(file=sys.stdout)
-            raise
+        return create_chat_completion(
+            self.client,
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
     
     def chat(
         self,
@@ -182,12 +159,21 @@ class LLMClient:
     def chat_json(
         self,
         messages: List[Dict[str, str]],
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = None,
-        max_attempts: int = 2,
+        temperature: float = 0.3,
+        max_tokens: Optional[int] = 4096,
+        max_attempts: int = 1,
     ) -> Dict[str, Any]:
         """
-        发送请求并解析JSON响应
+        发送聊天请求并返回JSON
+        
+        Args:
+            messages: 消息列表
+            temperature: 温度参数
+            max_tokens: 最大token数
+            max_attempts: 内容生成尝试次数（不含一次明确的JSON模式能力降级）
+            
+        Returns:
+            解析后的JSON对象
         """
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
@@ -197,6 +183,9 @@ class LLMClient:
         last_error: Optional[LLMResponseError] = None
 
         for attempt in range(1, max_attempts + 1):
+            # JSON-mode capability negotiation is separate from content
+            # regeneration. An explicit response_format rejection may add one
+            # request, but it must not consume a content attempt.
             while True:
                 try:
                     response = self._create_completion(
@@ -206,8 +195,14 @@ class LLMClient:
                         response_format=response_format,
                     )
                 except Exception as error:
-                    if _is_response_format_unsupported(error):
-                        logger.warning("LLM provider rejected response_format; retrying without it.")
+                    if (
+                        response_format is not None
+                        and _is_response_format_unsupported(error)
+                    ):
+                        logger.warning(
+                            "LLM provider explicitly rejected response_format; "
+                            "retrying once with prompt-only JSON guidance"
+                        )
                         response_format = None
                         continue
                     raise
@@ -220,6 +215,9 @@ class LLMClient:
                 if attempt >= max_attempts:
                     raise
 
+                # A caller-supplied cap is the common cause of a partial JSON
+                # object. Omit it for the one bounded retry so the provider can
+                # use its model-specific output limit.
                 had_token_cap = request_max_tokens is not None
                 request_max_tokens = None
                 logger.warning(
@@ -229,7 +227,7 @@ class LLMClient:
                     " without an output token cap" if had_token_cap else "",
                 )
 
-        if last_error is not None:
+        if last_error is not None:  # pragma: no cover - defensive loop guard
             raise last_error
         raise LLMResponseError("LLM did not produce a JSON response")
 
@@ -246,34 +244,47 @@ class LLMClient:
                 "LLM JSON output was truncated at the token limit",
                 finish_reason=finish_reason,
             )
+        if finish_reason not in {None, "stop"}:
+            raise LLMResponseError(
+                f"LLM JSON generation stopped unexpectedly ({finish_reason})",
+                finish_reason=finish_reason,
+            )
 
         content = _clean_chat_text(extract_chat_completion_text(response))
         if not content:
             raise LLMResponseError(
-                "LLM returned empty content",
+                "LLM returned empty JSON content",
                 finish_reason=finish_reason,
             )
 
         try:
             value = json.loads(content)
-            if isinstance(value, dict):
-                return value
-            if isinstance(value, list) and value and isinstance(value[0], dict):
-                return {"data": value}
         except json.JSONDecodeError as strict_error:
-            # Try extracting JSON object {...} with regex
-            match = re.search(r'\{[\s\S]*\}', content)
-            if match:
-                try:
-                    value = json.loads(match.group(0))
-                    if isinstance(value, dict):
-                        return value
-                except json.JSONDecodeError:
-                    pass
+            # Some compatible providers append a short explanation after an
+            # otherwise complete JSON object. Accept only an object decoded
+            # from the beginning; never repair or invent truncated JSON.
+            try:
+                value, end = json.JSONDecoder().raw_decode(content)
+            except json.JSONDecodeError:
+                raise LLMResponseError(
+                    "LLM returned invalid JSON "
+                    f"(line {strict_error.lineno}, column {strict_error.colno})",
+                    finish_reason=finish_reason,
+                ) from strict_error
 
+            trailing = content[end:].strip()
+            if trailing:
+                if _contains_additional_json_container(trailing):
+                    raise LLMResponseError(
+                        "LLM returned multiple JSON values",
+                        finish_reason=finish_reason,
+                    )
+                logger.warning("Ignoring text after a complete LLM JSON object")
+
+        if not isinstance(value, dict):
             raise LLMResponseError(
-                f"LLM returned invalid JSON: {strict_error}",
+                "LLM JSON response must be a top-level JSON object",
                 finish_reason=finish_reason,
-            ) from strict_error
+            )
 
-        raise LLMResponseError("LLM did not return a JSON object")
+        return value

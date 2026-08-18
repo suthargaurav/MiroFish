@@ -394,30 +394,30 @@ def generate_ontology():
     except Exception as error:
         provider_status = getattr(error, "status_code", None)
         request_id = getattr(error, "request_id", None)
-        err_msg = str(error)
 
         if isinstance(error, LLMResponseError):
-            public_error = f"LLM parsing error: {err_msg}"
+            public_error = str(error)
             response_status = 502
             logger.exception("LLM returned an unusable ontology response")
         elif isinstance(provider_status, int):
-            public_error = f"LLM provider error (HTTP {provider_status}): {err_msg}"
+            public_error = f"LLM provider request failed (HTTP {provider_status})"
             if request_id:
                 safe_request_id = re.sub(
                     r"[^a-zA-Z0-9._:-]", "", str(request_id)
                 )[:128]
                 if safe_request_id:
-                    public_error += f" [req_id: {safe_request_id}]"
+                    public_error += f" (request_id: {safe_request_id})"
             response_status = 502
+            # Provider exception bodies may echo request content. Keep the
+            # server log useful without serializing the exception body.
             logger.error(
-                "Ontology provider request failed: type=%s status=%s request_id=%s error=%s",
+                "Ontology provider request failed: type=%s status=%s request_id=%s",
                 type(error).__name__,
                 provider_status,
                 request_id or "unknown",
-                err_msg
             )
         else:
-            public_error = f"Ontology generation failed: {err_msg}"
+            public_error = "Ontology generation failed; check the server logs"
             response_status = 500
             logger.exception("Unexpected ontology generation failure")
 
