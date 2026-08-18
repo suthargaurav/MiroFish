@@ -1023,12 +1023,7 @@ class SimulationRunner:
             and monitor is not threading.current_thread()
             and monitor.is_alive()
         ):
-            wait_timeout = max(
-                30.0,
-                ZEP_INGESTION_WAIT_TIMEOUT_SECONDS
-                + ZEP_HTTP_REQUEST_TIMEOUT_SECONDS
-                + 5,
-            )
+            wait_timeout = 8.0
             monitor.join(timeout=wait_timeout)
             if monitor.is_alive():
                 # The monitor still owns finalization and may be inside one
