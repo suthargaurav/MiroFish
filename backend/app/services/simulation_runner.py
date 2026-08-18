@@ -653,6 +653,19 @@ class SimulationRunner:
                 
                 # 更新状态
                 cls._save_run_state(state)
+
+                # 检查是否所有平台都已达到目标轮次或触发 simulation_end
+                if cls._check_all_platforms_completed(state) or (
+                    state.total_rounds > 0
+                    and state.twitter_current_round >= state.total_rounds
+                    and state.reddit_current_round >= state.total_rounds
+                ):
+                    logger.info(
+                        f"所有平台模拟轮次已全部完成: {simulation_id} "
+                        f"(rounds: {state.current_round}/{state.total_rounds})"
+                    )
+                    break
+
                 time.sleep(2)
             
             # 进程结束后，最后读取一次日志
