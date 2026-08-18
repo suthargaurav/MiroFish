@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       environment_name:
-        description: 'GitHub Environment to use for secrets (e.g. production, default, or leave blank)'
+        description: 'GitHub Environment to use for secrets'
         required: false
-        default: ''
+        default: 'mirofish'
         type: string
       tunnel_mode:
         description: 'Tunnel provider for web access'
@@ -37,7 +37,7 @@ jobs:
   run-mirofish:
     name: MiroFish Cloud Runner
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment_name != '' && inputs.environment_name || null }}
+    environment: ${{ inputs.environment_name || 'mirofish' }}
     timeout-minutes: 360
 
     env:
