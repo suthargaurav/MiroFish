@@ -106,9 +106,15 @@ class LLMClient:
         if not self.api_key:
             raise ValueError("LLM_API_KEY 未配置")
         
+        headers = {}
+        if self.base_url and "openrouter.ai" in self.base_url:
+            headers["HTTP-Referer"] = "https://github.com/suthargaurav/MiroFish"
+            headers["X-Title"] = "MiroFish"
+
         self.client = OpenAI(
             api_key=self.api_key,
-            base_url=self.base_url
+            base_url=self.base_url,
+            default_headers=headers if headers else None
         )
 
     def _create_completion(
@@ -133,7 +139,8 @@ class LLMClient:
         except Exception as e:
             # THIS FORCES THE EXACT API ERROR TO PRINT IN YOUR TERMINAL
             print("\n" + "="*60)
-            print("💥 OPENCODE / LLM API CRASHED! HERE IS THE EXACT REASON:")
+            print("💥 OPENROUTER / LLM API ERROR:")
+            print(f"Model: {self.model} | Endpoint: {self.base_url}")
             print(str(e))
             print("="*60 + "\n")
             traceback.print_exc(file=sys.stdout)
