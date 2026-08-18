@@ -68,6 +68,32 @@ jobs:
         with:
           version: 'latest'
 
+      - name: Configure Environment & Validate Secrets
+        run: |
+          echo "📝 Creating .env file from GitHub Secrets..."
+          cat <<EOF > .env
+          LLM_API_KEY=${LLM_API_KEY}
+          LLM_BASE_URL=${LLM_BASE_URL}
+          LLM_MODEL_NAME=${LLM_MODEL_NAME}
+          ZEP_API_KEY=${ZEP_API_KEY}
+          FLASK_HOST=0.0.0.0
+          FLASK_PORT=5001
+          EOF
+
+          if [ -z "$LLM_API_KEY" ] || [ -z "$ZEP_API_KEY" ]; then
+            echo "::error::❌ LLM_API_KEY or ZEP_API_KEY is EMPTY!"
+            echo ""
+            echo "======================================================================="
+            echo "⚠️ SECRETS NOT FOUND BY GITHUB ACTIONS"
+            echo "Why this happened:"
+            echo "You saved secrets inside an 'Environment' (e.g. production/test/etc.),"
+            echo "but ran the workflow without specifying that environment name, OR"
+            echo "they need to be added as 'Repository Secrets'."
+            echo "======================================================================="
+            exit 1
+          fi
+          echo "✅ Secrets successfully loaded and .env generated."
+
       - name: Install Dependencies
         run: |
           echo "📦 Installing root & frontend dependencies..."
