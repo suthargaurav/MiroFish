@@ -1,0 +1,177 @@
+name: Run MiroFish on GitHub Compute
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment_name:
+        description: 'GitHub Environment to use for secrets (e.g. production, default, or leave blank)'
+        required: false
+        default: ''
+        type: string
+      tunnel_mode:
+        description: 'Tunnel provider for web access'
+        required: true
+        default: 'cloudflare'
+        type: choice
+        options:
+          - cloudflare
+          - pinggy
+          - none
+      run_duration_hours:
+        description: 'How many hours to keep the instance running (1 to 5 hours)'
+        required: true
+        default: '2'
+        type: choice
+        options:
+          - '1'
+          - '2'
+          - '3'
+          - '4'
+          - '5'
+
+concurrency:
+  group: mirofish-runner-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-mirofish:
+    name: MiroFish Cloud Runner
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment_name != '' && inputs.environment_name || null }}
+    timeout-minutes: 360
+
+    env:
+      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+      LLM_BASE_URL: ${{ secrets.LLM_BASE_URL || 'https://opencode.ai/zen/go/v1' }}
+      LLM_MODEL_NAME: ${{ secrets.LLM_MODEL_NAME || 'deepseek-v4-pro' }}
+      ZEP_API_KEY: ${{ secrets.ZEP_API_KEY }}
+      FLASK_HOST: '0.0.0.0'
+      FLASK_PORT: 5001
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install uv (Fast Python Package Manager)
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: 'latest'
+
+      - name: Install Dependencies
+        run: |
+          echo "📦 Installing root & frontend dependencies..."
+          npm ci || npm install
+          cd frontend && (npm ci || npm install) && cd ..
+          
+          echo "🐍 Installing backend dependencies with uv..."
+          cd backend && uv sync && cd ..
+
+      - name: Start MiroFish Services (Backend & Frontend)
+        run: |
+          echo "🚀 Starting MiroFish Backend on port 5001..."
+          cd backend
+          nohup uv run python run.py > ../backend.log 2>&1 &
+          cd ..
+
+          echo "🚀 Starting MiroFish Frontend on port 3000..."
+          cd frontend
+          nohup npm run dev -- --host 0.0.0.0 --port 3000 > ../frontend.log 2>&1 &
+          cd ..
+
+          echo "⏳ Waiting for services to initialize..."
+          for i in {1..30}; do
+            if curl -s http://localhost:3000 > /dev/null && curl -s http://localhost:5001 > /dev/null; then
+              echo "✅ Services are up and healthy!"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Launch Cloudflare Tunnel
+        if: inputs.tunnel_mode == 'cloudflare'
+        run: |
+          echo "🌐 Installing and launching Cloudflare Quick Tunnel..."
+          curl -sL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+          chmod +x cloudflared
+          
+          # Start tunnel in background and capture output
+          ./cloudflared tunnel --url http://localhost:3000 --no-autoupdate > tunnel.log 2>&1 &
+          
+          echo "⏳ Generating public URL..."
+          sleep 6
+          
+          TUNNEL_URL=""
+          for i in {1..20}; do
+            TUNNEL_URL=$(grep -o 'https://[a-zA-Z0-9-]*\.trycloudflare\.com' tunnel.log | head -n 1 || true)
+            if [ -n "$TUNNEL_URL" ]; then
+              break
+            fi
+            sleep 2
+          done
+          
+          if [ -n "$TUNNEL_URL" ]; then
+            echo "================================================================="
+            echo "🎉 MIROFISH IS LIVE ON GITHUB COMPUTE!"
+            echo "👉 Open Web UI: $TUNNEL_URL"
+            echo "================================================================="
+            
+            echo "### 🐟 MiroFish is Running on GitHub Compute!" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "🔗 **[Click here to open MiroFish Web UI]($TUNNEL_URL)**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Tunnel URL**: \`$TUNNEL_URL\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Backend Port**: \`5001\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Frontend Port**: \`3000\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Runner Duration**: \`${{ inputs.run_duration_hours }} hour(s)\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Could not parse trycloudflare URL immediately. Check tunnel.log:"
+            cat tunnel.log
+          fi
+
+      - name: Launch Pinggy Tunnel
+        if: inputs.tunnel_mode == 'pinggy'
+        run: |
+          echo "🌐 Launching Pinggy Tunnel..."
+          ssh -p 443 -R0:localhost:3000 -o StrictHostKeyChecking=no -o ServerAliveInterval=30 a.pinggy.io > pinggy.log 2>&1 &
+          sleep 5
+          cat pinggy.log
+
+      - name: Keep Runner Alive
+        run: |
+          DURATION_SECONDS=$(( ${{ inputs.run_duration_hours }} * 3600 ))
+          echo "⏳ MiroFish will run on GitHub Actions for ${{ inputs.run_duration_hours }} hour(s) ($DURATION_SECONDS seconds)..."
+          echo "ℹ️ You can stop this run anytime from the GitHub Actions tab by clicking 'Cancel workflow'."
+          
+          END_TIME=$(( $(date +%s) + DURATION_SECONDS ))
+          while [ $(date +%s) -lt $END_TIME ]; do
+            # Check backend & frontend status
+            if ! pgrep -f "run.py" > /dev/null; then
+              echo "⚠️ Backend stopped! Recent logs:"
+              tail -n 30 backend.log
+              break
+            fi
+            sleep 60
+          done
+          echo "🏁 Run duration completed."
+
+      - name: Upload Logs on Failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirofish-runtime-logs
+          path: |
+            backend.log
+            frontend.log
+            tunnel.log
+          retention-days: 3
