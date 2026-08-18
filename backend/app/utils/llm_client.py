@@ -206,13 +206,10 @@ class LLMClient:
                         response_format=response_format,
                     )
                 except Exception as error:
-                    if (
-                        response_format is not None
-                        and _is_response_format_unsupported(error)
-                    ):
+                    if response_format is not None:
                         logger.warning(
-                            "LLM provider explicitly rejected response_format; "
-                            "retrying once with prompt-only JSON guidance"
+                            "LLM provider rejected or failed with response_format (%s); retrying with prompt-only JSON guidance",
+                            error
                         )
                         response_format = None
                         continue

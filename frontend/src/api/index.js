@@ -37,7 +37,20 @@ service.interceptors.response.use(
   },
   error => {
     console.error('Response error:', error)
-    const apiError = error.response?.data?.error || error.response?.data?.message
+    const resData = error.response?.data
+    let apiError = null
+    if (resData) {
+      if (typeof resData === 'object') {
+        apiError = resData.error || resData.message
+      } else if (typeof resData === 'string') {
+        try {
+          const parsed = JSON.parse(resData)
+          apiError = parsed.error || parsed.message || resData
+        } catch (e) {
+          apiError = resData
+        }
+      }
+    }
     
     // 处理超时
     if (error.code === 'ECONNABORTED' && error.message.includes('timeout')) {
@@ -49,9 +62,7 @@ service.interceptors.response.use(
       console.error('Network error - please check your connection')
     }
 
-    // Axios rejects non-2xx responses before the success interceptor can
-    // surface the backend's safe, actionable error message.
-    if (typeof apiError === 'string' && apiError) {
+    if (apiError) {
       error.message = apiError
     }
     
