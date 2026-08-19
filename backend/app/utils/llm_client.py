@@ -69,6 +69,10 @@ def _clean_chat_text(content: str) -> str:
 
     cleaned = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
     cleaned = cleaned.lstrip("\ufeff")
+    if '```' in cleaned:
+        match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', cleaned, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
     cleaned = re.sub(r'^```(?:json)?\s*\n?', '', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\n?```\s*$', '', cleaned)
     return cleaned.strip()
@@ -104,9 +108,15 @@ class LLMClient:
         if not self.api_key:
             raise ValueError("LLM_API_KEY 未配置")
         
+        headers = {}
+        if self.base_url and "openrouter.ai" in self.base_url:
+            headers["HTTP-Referer"] = "https://github.com/suthargaurav/MiroFish"
+            headers["X-Title"] = "MiroFish"
+
         self.client = OpenAI(
             api_key=self.api_key,
-            base_url=self.base_url
+            base_url=self.base_url,
+            default_headers=headers if headers else None
         )
 
     def _create_completion(
@@ -132,8 +142,7 @@ class LLMClient:
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        max_tokens: Optional[int] = 4096,
-        response_format: Optional[Dict] = None
+        max_tokens: Optional[int] = None
     ) -> str:
         """
         发送聊天请求
@@ -142,26 +151,24 @@ class LLMClient:
             messages: 消息列表
             temperature: 温度参数
             max_tokens: 最大token数
-            response_format: 响应格式（如JSON模式）
             
         Returns:
-            模型响应文本
+            模型回复文本
         """
         response = self._create_completion(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            response_format=response_format,
+            response_format=None,
         )
-        content = extract_chat_completion_text(response)
-        return _clean_chat_text(content)
+        return _clean_chat_text(extract_chat_completion_text(response))
     
     def chat_json(
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.3,
         max_tokens: Optional[int] = 4096,
-        max_attempts: int = 1,
+        max_attempts: int = 2,
     ) -> Dict[str, Any]:
         """
         发送聊天请求并返回JSON
@@ -183,9 +190,6 @@ class LLMClient:
         last_error: Optional[LLMResponseError] = None
 
         for attempt in range(1, max_attempts + 1):
-            # JSON-mode capability negotiation is separate from content
-            # regeneration. An explicit response_format rejection may add one
-            # request, but it must not consume a content attempt.
             while True:
                 try:
                     response = self._create_completion(
@@ -197,7 +201,7 @@ class LLMClient:
                 except Exception as error:
                     if (
                         response_format is not None
-                        and _is_response_format_unsupported(error)
+                        and (_is_response_format_unsupported(error) or getattr(error, "status_code", None) in {400, 422})
                     ):
                         logger.warning(
                             "LLM provider explicitly rejected response_format; "
@@ -215,9 +219,6 @@ class LLMClient:
                 if attempt >= max_attempts:
                     raise
 
-                # A caller-supplied cap is the common cause of a partial JSON
-                # object. Omit it for the one bounded retry so the provider can
-                # use its model-specific output limit.
                 had_token_cap = request_max_tokens is not None
                 request_max_tokens = None
                 logger.warning(
@@ -227,7 +228,7 @@ class LLMClient:
                     " without an output token cap" if had_token_cap else "",
                 )
 
-        if last_error is not None:  # pragma: no cover - defensive loop guard
+        if last_error is not None:
             raise last_error
         raise LLMResponseError("LLM did not produce a JSON response")
 
@@ -244,11 +245,8 @@ class LLMClient:
                 "LLM JSON output was truncated at the token limit",
                 finish_reason=finish_reason,
             )
-        if finish_reason not in {None, "stop"}:
-            raise LLMResponseError(
-                f"LLM JSON generation stopped unexpectedly ({finish_reason})",
-                finish_reason=finish_reason,
-            )
+        if finish_reason not in {None, "stop", "eos", "end_turn", "STOP"}:
+            logger.warning(f"Non-standard finish_reason from LLM: {finish_reason}")
 
         content = _clean_chat_text(extract_chat_completion_text(response))
         if not content:
@@ -260,26 +258,36 @@ class LLMClient:
         try:
             value = json.loads(content)
         except json.JSONDecodeError as strict_error:
-            # Some compatible providers append a short explanation after an
-            # otherwise complete JSON object. Accept only an object decoded
-            # from the beginning; never repair or invent truncated JSON.
             try:
                 value, end = json.JSONDecoder().raw_decode(content)
+                trailing = content[end:].strip()
+                if trailing:
+                    if _contains_additional_json_container(trailing):
+                        raise LLMResponseError(
+                            "LLM returned multiple JSON values",
+                            finish_reason=finish_reason,
+                        )
+                    logger.warning("Ignoring text after a complete LLM JSON object")
             except json.JSONDecodeError:
-                raise LLMResponseError(
-                    "LLM returned invalid JSON "
-                    f"(line {strict_error.lineno}, column {strict_error.colno})",
-                    finish_reason=finish_reason,
-                ) from strict_error
-
-            trailing = content[end:].strip()
-            if trailing:
-                if _contains_additional_json_container(trailing):
+                match = re.search(r'\{[\s\S]*\}', content)
+                if match:
+                    try:
+                        value = json.loads(match.group(0))
+                    except json.JSONDecodeError:
+                        try:
+                            value, _ = json.JSONDecoder().raw_decode(match.group(0))
+                        except json.JSONDecodeError:
+                            raise LLMResponseError(
+                                "LLM returned invalid JSON "
+                                f"(line {strict_error.lineno}, column {strict_error.colno})",
+                                finish_reason=finish_reason,
+                            ) from strict_error
+                else:
                     raise LLMResponseError(
-                        "LLM returned multiple JSON values",
+                        "LLM returned invalid JSON "
+                        f"(line {strict_error.lineno}, column {strict_error.colno})",
                         finish_reason=finish_reason,
-                    )
-                logger.warning("Ignoring text after a complete LLM JSON object")
+                    ) from strict_error
 
         if not isinstance(value, dict):
             raise LLMResponseError(
