@@ -185,9 +185,11 @@ class LLMClient:
         if max_attempts < 1:
             raise ValueError("max_attempts must be at least 1")
 
-        response_format: Optional[Dict[str, str]] = {"type": "json_object"}
+        # OpenRouter and third-party models work best with prompt-guided JSON
+        is_custom_provider = bool(self.base_url and "api.openai.com" not in self.base_url)
+        response_format: Optional[Dict[str, str]] = None if is_custom_provider else {"type": "json_object"}
         request_max_tokens = max_tokens
-        last_error: Optional[LLMResponseError] = None
+        last_error: Optional[Exception] = None
 
         for attempt in range(1, max_attempts + 1):
             while True:
@@ -199,13 +201,10 @@ class LLMClient:
                         response_format=response_format,
                     )
                 except Exception as error:
-                    if (
-                        response_format is not None
-                        and (_is_response_format_unsupported(error) or getattr(error, "status_code", None) in {400, 422})
-                    ):
+                    if response_format is not None:
                         logger.warning(
-                            "LLM provider explicitly rejected response_format; "
-                            "retrying once with prompt-only JSON guidance"
+                            "LLM provider failed with response_format (%s); retrying with prompt-only JSON guidance",
+                            error
                         )
                         response_format = None
                         continue
@@ -214,7 +213,7 @@ class LLMClient:
 
             try:
                 return self._parse_json_response(response)
-            except LLMResponseError as error:
+            except Exception as error:
                 last_error = error
                 if attempt >= max_attempts:
                     raise
@@ -222,9 +221,8 @@ class LLMClient:
                 had_token_cap = request_max_tokens is not None
                 request_max_tokens = None
                 logger.warning(
-                    "LLM returned unusable JSON (finish_reason=%s); "
-                    "retrying content generation%s",
-                    error.finish_reason or "unknown",
+                    "LLM returned unusable JSON (%s); retrying content generation%s",
+                    error,
                     " without an output token cap" if had_token_cap else "",
                 )
 
