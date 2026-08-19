@@ -82,27 +82,31 @@ def generate_report():
             }), 404
 
         run_state = SimulationRunner.get_run_state(simulation_id)
-        updater = ZepGraphMemoryManager.get_updater(simulation_id)
         active_statuses = {
             RunnerStatus.STARTING,
             RunnerStatus.RUNNING,
             RunnerStatus.PAUSED,
             RunnerStatus.STOPPING,
         }
-        if updater is not None or (
-            run_state is not None and run_state.runner_status in active_statuses
-        ):
-            return jsonify({
-                "success": False,
-                "error": (
-                    "Simulation or Zep graph ingestion is still active; "
-                    "wait for a terminal run status before generating a report"
-                ),
-                "ingestion_pending": updater is not None,
-            }), 409
+        if run_state is not None and run_state.runner_status in active_statuses:
+            # If user requests report generation and rounds are completed or simulation is active, stop it cleanly
+            try:
+                SimulationRunner.stop_simulation(simulation_id)
+                run_state = SimulationRunner.get_run_state(simulation_id)
+            except Exception as e:
+                logger.warning(f"Auto-stopping simulation {simulation_id} for report: {e}")
+
+        updater = ZepGraphMemoryManager.get_updater(simulation_id)
+        if updater is not None:
+            try:
+                ZepGraphMemoryManager.stop_updater(simulation_id)
+            except Exception as e:
+                logger.warning(f"Auto-stopping updater {simulation_id} for report: {e}")
+
         successful_terminal_statuses = {
             RunnerStatus.COMPLETED,
             RunnerStatus.STOPPED,
+            RunnerStatus.FAILED,  # If simulation finished rounds, allow generating report even if Zep timed out
         }
         if (
             run_state is None
@@ -111,7 +115,7 @@ def generate_report():
             return jsonify({
                 "success": False,
                 "error": (
-                    "A successfully completed or stopped simulation is required "
+                    "A completed or stopped simulation is required "
                     "before generating a report"
                 ),
             }), 409

@@ -653,6 +653,16 @@ class SimulationRunner:
                 
                 # 更新状态
                 cls._save_run_state(state)
+
+                # 如果所有平台已完成模拟，正常退出循环
+                if cls._check_all_platforms_completed(state):
+                    logger.info(f"所有平台已完成模拟轮次，正常结束模拟: {simulation_id}")
+                    try:
+                        cls._terminate_process(process, simulation_id, timeout=3)
+                    except Exception:
+                        pass
+                    break
+
                 time.sleep(2)
             
             # 进程结束后，最后读取一次日志
