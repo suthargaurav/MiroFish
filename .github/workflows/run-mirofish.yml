@@ -192,16 +192,20 @@ jobs:
           echo "⏳ MiroFish will run on GitHub Actions for ${{ inputs.run_duration_hours }} hour(s) ($DURATION_SECONDS seconds)..."
           echo "ℹ️ You can stop this run anytime from the GitHub Actions tab by clicking 'Cancel workflow'."
           
+          # Stream backend logs in real-time to workflow console
+          tail -n +1 -F backend.log &
+          TAIL_PID=$!
+
           END_TIME=$(( $(date +%s) + DURATION_SECONDS ))
           while [ $(date +%s) -lt $END_TIME ]; do
             # Check backend & frontend status
             if ! pgrep -f "run.py" > /dev/null; then
-              echo "⚠️ Backend stopped! Recent logs:"
-              tail -n 30 backend.log
+              echo "⚠️ Backend stopped!"
               break
             fi
-            sleep 60
+            sleep 30
           done
+          kill $TAIL_PID 2>/dev/null || true
           echo "🏁 Run duration completed."
 
       - name: Upload Logs on Failure

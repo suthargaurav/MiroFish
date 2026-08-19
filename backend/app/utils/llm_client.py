@@ -129,14 +129,18 @@ class LLMClient:
     ) -> Any:
         """Send one raw Chat Completions request through the compatibility layer."""
 
-        return create_chat_completion(
-            self.client,
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            response_format=response_format,
-        )
+        try:
+            return create_chat_completion(
+                self.client,
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=response_format,
+            )
+        except Exception as e:
+            logger.error(f"LLM API Call Error: {e} (model={self.model}, base_url={self.base_url})")
+            raise
     
     def chat(
         self,
