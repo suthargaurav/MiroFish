@@ -91,6 +91,10 @@
       </div>
 
       <div class="action-controls">
+        <label class="memory-toggle" title="Enable real-time streaming of simulation actions to Zep Cloud">
+          <input type="checkbox" v-model="enableGraphMemoryUpdate" :disabled="phase === 1" />
+          <span>Dynamic Zep Memory</span>
+        </label>
         <button 
           class="action-btn primary"
           :disabled="isStarting || isGeneratingReport"
@@ -317,6 +321,7 @@ const router = useRouter()
 
 // State
 const isGeneratingReport = ref(false)
+const enableGraphMemoryUpdate = ref(false) // Default to false so Zep never chokes or bottlenecks simulation
 const phase = ref(0) // 0: 未开始, 1: 运行中, 2: 已完成
 const isStarting = ref(false)
 const isStopping = ref(false)
@@ -399,7 +404,7 @@ const doStartSimulation = async () => {
       simulation_id: props.simulationId,
       platform: 'parallel',
       force: true,  // 强制重新开始
-      enable_graph_memory_update: true  // 开启动态图谱更新
+      enable_graph_memory_update: enableGraphMemoryUpdate.value
     }
     
     if (props.maxRounds) {
@@ -1264,5 +1269,28 @@ onUnmounted(() => {
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
   margin-right: 6px;
+}
+
+.memory-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #888;
+  cursor: pointer;
+  user-select: none;
+  margin-right: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.memory-toggle:hover {
+  color: #CCC;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.memory-toggle input {
+  cursor: pointer;
+  accent-color: #3b82f6;
 }
 </style>
