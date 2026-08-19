@@ -605,17 +605,21 @@ class ZepGraphMemoryUpdater:
             deadline = time.time() + ZEP_INGESTION_WAIT_TIMEOUT_SECONDS
         while pending:
             if time.time() >= deadline:
-                raise TimeoutError(
-                    f"Zep simulation ingestion timed out with {len(pending)} "
-                    "episode(s) pending"
+                logger.warning(
+                    f"Zep simulation ingestion wait elapsed with {len(pending)} "
+                    "episode(s) still indexing asynchronously on Zep Cloud. Proceeding..."
                 )
+                break
             for episode_uuid in list(pending):
-                episode = call_zep_read_with_retry(
-                    lambda: self.client.graph.episode.get(uuid_=episode_uuid),
-                    operation_name=f"poll simulation episode {episode_uuid}",
-                )
-                if getattr(episode, "processed", False):
-                    pending.remove(episode_uuid)
+                try:
+                    episode = call_zep_read_with_retry(
+                        lambda: self.client.graph.episode.get(uuid_=episode_uuid),
+                        operation_name=f"poll simulation episode {episode_uuid}",
+                    )
+                    if getattr(episode, "processed", False):
+                        pending.remove(episode_uuid)
+                except Exception as e:
+                    logger.debug(f"Failed to check episode {episode_uuid}: {e}")
             if pending:
                 time.sleep(3)
         self._pending_episode_uuids = []
