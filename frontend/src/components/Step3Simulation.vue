@@ -93,7 +93,7 @@
       <div class="action-controls">
         <button 
           class="action-btn primary"
-          :disabled="phase !== 2 || isGeneratingReport"
+          :disabled="isStarting || isGeneratingReport"
           @click="handleNextStep"
         >
           <span v-if="isGeneratingReport" class="loading-spinner-small"></span>
