@@ -612,7 +612,8 @@ const handleNewProject = async () => {
     }
   } catch (err) {
     console.error('Handle new project error:', err)
-    error.value = '项目初始化失败: ' + (err.message || '未知错误')
+    const errorMsg = err.response?.data?.error || err.message || '未知错误'
+    error.value = '项目初始化失败: ' + errorMsg
   } finally {
     loading.value = false
   }
