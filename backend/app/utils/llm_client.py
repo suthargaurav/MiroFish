@@ -6,6 +6,7 @@ LLM客户端封装
 import json
 import logging
 import re
+import time
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
@@ -127,20 +128,28 @@ class LLMClient:
         max_tokens: Optional[int],
         response_format: Optional[Dict[str, Any]],
     ) -> Any:
-        """Send one raw Chat Completions request through the compatibility layer."""
+        """Send one raw Chat Completions request through the compatibility layer with auto-retry on 429 rate limits."""
 
-        try:
-            return create_chat_completion(
-                self.client,
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                response_format=response_format,
-            )
-        except Exception as e:
-            logger.error(f"LLM API Call Error: {e} (model={self.model}, base_url={self.base_url})")
-            raise
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                return create_chat_completion(
+                    self.client,
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    response_format=response_format,
+                )
+            except Exception as e:
+                status_code = getattr(e, "status_code", None)
+                if (status_code == 429 or "rate" in str(e).lower() or "temporarily" in str(e).lower()) and attempt < max_retries - 1:
+                    wait_time = 5 * (attempt + 1)
+                    logger.warning(f"Rate limited (429) from {self.model}, auto-retrying in {wait_time}s (attempt {attempt+1}/{max_retries})...")
+                    time.sleep(wait_time)
+                    continue
+                logger.error(f"LLM API Call Error: {e} (model={self.model}, base_url={self.base_url})")
+                raise
     
     def chat(
         self,
