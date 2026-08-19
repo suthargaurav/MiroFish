@@ -103,6 +103,14 @@ jobs:
           echo "🐍 Installing backend dependencies with uv..."
           cd backend && uv sync && cd ..
 
+      - name: Restore Persistent Data (Projects, Simulations, Reports)
+        uses: actions/cache/restore@v4
+        with:
+          path: backend/uploads
+          key: mirofish-data-${{ github.run_id }}
+          restore-keys: |
+            mirofish-data-
+
       - name: Start MiroFish Services (Backend & Frontend)
         run: |
           echo "🚀 Starting MiroFish Backend on port 5001..."
@@ -208,6 +216,21 @@ jobs:
           kill $TAIL_PID 2>/dev/null || true
           echo "🏁 Run duration completed."
 
+      - name: Save Persistent Data Cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: backend/uploads
+          key: mirofish-data-${{ github.run_id }}
+
+      - name: Upload Persistent Data Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirofish-data
+          path: backend/uploads
+          retention-days: 30
+
       - name: Upload Logs on Failure
         if: always()
         uses: actions/upload-artifact@v4
@@ -216,5 +239,7 @@ jobs:
           path: |
             backend.log
             frontend.log
-            tunnel.log
+            cf.log
+            pinggy.log
+            lt.log
           retention-days: 3
