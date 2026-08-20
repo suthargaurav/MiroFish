@@ -54,7 +54,24 @@ def create_chat_completion(
         else:
             kwargs["max_tokens"] = max_tokens
 
-    return client.chat.completions.create(**kwargs)
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as e:
+        err_msg = str(e).lower()
+        retried = False
+        if ("temperature" in err_msg or "unsupported_parameter" in err_msg) and "temperature" in kwargs:
+            kwargs.pop("temperature", None)
+            retried = True
+        if ("max_tokens" in err_msg or "max_completion_tokens" in err_msg) and "max_tokens" in kwargs:
+            kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+            retried = True
+        if ("response_format" in err_msg or "json_object" in err_msg) and "response_format" in kwargs:
+            kwargs.pop("response_format", None)
+            retried = True
+        
+        if retried:
+            return client.chat.completions.create(**kwargs)
+        raise
 
 
 def extract_chat_completion_text(response: Any) -> str:

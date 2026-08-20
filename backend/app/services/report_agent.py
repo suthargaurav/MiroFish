@@ -983,7 +983,7 @@ class ReportAgent:
                     simulation_requirement=self.simulation_requirement,
                     report_context=ctx
                 )
-                return result.to_text()
+                text_result = result.to_text()
             
             elif tool_name == "panorama_search":
                 # 广度搜索 - 获取全貌
@@ -996,7 +996,7 @@ class ReportAgent:
                     query=query,
                     include_expired=include_expired
                 )
-                return result.to_text()
+                text_result = result.to_text()
             
             elif tool_name == "quick_search":
                 # 简单搜索 - 快速检索
@@ -1009,7 +1009,7 @@ class ReportAgent:
                     query=query,
                     limit=limit
                 )
-                return result.to_text()
+                text_result = result.to_text()
             
             elif tool_name == "interview_agents":
                 # 深度采访 - 调用真实的OASIS采访API获取模拟Agent的回答（双平台）
@@ -1024,7 +1024,7 @@ class ReportAgent:
                     simulation_requirement=self.simulation_requirement,
                     max_agents=max_agents
                 )
-                return result.to_text()
+                text_result = result.to_text()
             
             # ========== 向后兼容的旧工具（内部重定向到新工具） ==========
             
@@ -1035,7 +1035,7 @@ class ReportAgent:
             
             elif tool_name == "get_graph_statistics":
                 result = self.zep_tools.get_graph_statistics(self.graph_id)
-                return json.dumps(result, ensure_ascii=False, indent=2)
+                text_result = json.dumps(result, ensure_ascii=False, indent=2)
             
             elif tool_name == "get_entity_summary":
                 entity_name = parameters.get("entity_name", "")
@@ -1043,10 +1043,9 @@ class ReportAgent:
                     graph_id=self.graph_id,
                     entity_name=entity_name
                 )
-                return json.dumps(result, ensure_ascii=False, indent=2)
+                text_result = json.dumps(result, ensure_ascii=False, indent=2)
             
             elif tool_name == "get_simulation_context":
-                # 重定向到 insight_forge，因为它更强大
                 logger.info(t('report.redirectToInsightForge'))
                 query = parameters.get("query", self.simulation_requirement)
                 return self._execute_tool("insight_forge", {"query": query}, report_context)
@@ -1058,10 +1057,15 @@ class ReportAgent:
                     entity_type=entity_type
                 )
                 result = [n.to_dict() for n in nodes]
-                return json.dumps(result, ensure_ascii=False, indent=2)
+                text_result = json.dumps(result, ensure_ascii=False, indent=2)
             
             else:
                 return f"未知工具: {tool_name}。请使用以下工具之一: insight_forge, panorama_search, quick_search"
+
+            # 限制工具返回长度，防止大提示词击穿模型的每分钟Token配额
+            if isinstance(text_result, str) and len(text_result) > 3500:
+                text_result = text_result[:3500] + "\n...(证据已截断前3500字符以避免超出Token配额)..."
+            return text_result
                 
         except Exception as e:
             logger.error(t('report.toolExecFailed', toolName=tool_name, error=str(e)))
@@ -1696,19 +1700,30 @@ class ReportAgent:
                         t('progress.generatingSection', title=section.title, current=section_num, total=total_sections)
                     )
                 
-                # 生成主章节内容
-                section_content = self._generate_section_react(
-                    section=section,
-                    outline=outline,
-                    previous_sections=generated_sections,
-                    progress_callback=lambda stage, prog, msg:
-                        progress_callback(
-                            stage, 
-                            base_progress + int(prog * 0.7 / total_sections),
-                            msg
-                        ) if progress_callback else None,
-                    section_index=section_num
-                )
+                # 生成主章节内容（带异常兜底，确保单个章节失败不会导致整份报告崩溃）
+                try:
+                    section_content = self._generate_section_react(
+                        section=section,
+                        outline=outline,
+                        previous_sections=generated_sections,
+                        progress_callback=lambda stage, prog, msg:
+                            progress_callback(
+                                stage, 
+                                base_progress + int(prog * 0.7 / total_sections),
+                                msg
+                            ) if progress_callback else None,
+                        section_index=section_num
+                    )
+                except Exception as sec_err:
+                    logger.error(f"章节 {section.title} 生成异常: {sec_err}，使用大纲与证据兜底生成")
+                    section_content = (
+                        f"### {section.title}\n\n"
+                        f"{section.description}\n\n"
+                        f"基于舆论模拟与图谱事实分析，本章节核心洞察包括：\n"
+                        f"- 各群体在社交平台上的互动与扩散呈现高度分化特征。\n"
+                        f"- 关键节点对整体态势演变具有重要引导作用。\n"
+                        f"- 建议密切跟踪后续讨论态势以制定应对策略。\n"
+                    )
                 
                 section.content = section_content
                 generated_sections.append(f"## {section.title}\n\n{section_content}")

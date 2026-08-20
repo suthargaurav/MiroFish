@@ -128,9 +128,9 @@ class LLMClient:
         max_tokens: Optional[int],
         response_format: Optional[Dict[str, Any]],
     ) -> Any:
-        """Send one raw Chat Completions request through the compatibility layer with auto-retry on 429 rate limits."""
+        """Send one raw Chat Completions request through the compatibility layer with auto-retry on 429 rate limits and quota resets."""
 
-        max_retries = 3
+        max_retries = 5
         for attempt in range(max_retries):
             try:
                 return create_chat_completion(
@@ -142,10 +142,20 @@ class LLMClient:
                     response_format=response_format,
                 )
             except Exception as e:
+                err_str = str(e).lower()
                 status_code = getattr(e, "status_code", None)
-                if (status_code == 429 or "rate" in str(e).lower() or "temporarily" in str(e).lower()) and attempt < max_retries - 1:
-                    wait_time = 5 * (attempt + 1)
-                    logger.warning(f"Rate limited (429) from {self.model}, auto-retrying in {wait_time}s (attempt {attempt+1}/{max_retries})...")
+                is_rate_limit = (
+                    status_code == 429
+                    or "429" in err_str
+                    or "rate" in err_str
+                    or "quota" in err_str
+                    or "resource_exhausted" in err_str
+                    or "temporarily" in err_str
+                    or "exceeded" in err_str
+                )
+                if is_rate_limit and attempt < max_retries - 1:
+                    wait_time = 6 * (attempt + 1)
+                    logger.warning(f"Rate/Quota limited (429) from {self.model}, auto-retrying in {wait_time}s (attempt {attempt+1}/{max_retries})...")
                     time.sleep(wait_time)
                     continue
                 logger.error(f"LLM API Call Error: {e} (model={self.model}, base_url={self.base_url})")
