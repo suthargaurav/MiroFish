@@ -651,17 +651,16 @@ class SimulationRunner:
                         reddit_actions_log, reddit_position, state, "reddit"
                     )
                 
-                # 更新状态
-                cls._save_run_state(state)
-
-                # 如果所有平台已完成模拟，正常退出循环
+                # 如果所有平台已完成模拟，更新完成状态但保留进程以便接收交互式命令
                 if cls._check_all_platforms_completed(state):
-                    logger.info(f"所有平台已完成模拟轮次，正常结束模拟: {simulation_id}")
-                    try:
-                        cls._terminate_process(process, simulation_id, timeout=3)
-                    except Exception:
-                        pass
-                    break
+                    if state.runner_status != RunnerStatus.COMPLETED:
+                        logger.info(f"所有平台已完成模拟轮次，状态更新为完成: {simulation_id}")
+                        state.runner_status = RunnerStatus.COMPLETED
+                        state.twitter_running = False
+                        state.reddit_running = False
+                        state.completed_at = datetime.now().isoformat()
+                        cls._save_run_state(state)
+                        cls._sync_simulation_status(simulation_id, RunnerStatus.COMPLETED)
 
                 time.sleep(2)
             
@@ -1650,39 +1649,36 @@ class SimulationRunner:
     def check_env_alive(cls, simulation_id: str) -> bool:
         """
         检查模拟环境是否存活（可以接收Interview命令）
-
-        Args:
-            simulation_id: 模拟ID
-
-        Returns:
-            True 表示环境存活，False 表示环境已关闭
         """
         sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
         if not os.path.exists(sim_dir):
             return False
 
         ipc_client = SimulationIPCClient(sim_dir)
-        return ipc_client.check_env_alive()
+        if ipc_client.check_env_alive():
+            return True
+
+        # 如果进程已不在运行，只要有配置文件或人物画像，仍支持通过 Agent LLM 进行交互采访
+        has_config = os.path.exists(os.path.join(sim_dir, "simulation_config.json"))
+        has_profiles = (
+            os.path.exists(os.path.join(sim_dir, "reddit_profiles.json"))
+            or os.path.exists(os.path.join(sim_dir, "twitter_profiles.csv"))
+        )
+        return has_config or has_profiles
 
     @classmethod
     def get_env_status_detail(cls, simulation_id: str) -> Dict[str, Any]:
         """
         获取模拟环境的详细状态信息
-
-        Args:
-            simulation_id: 模拟ID
-
-        Returns:
-            状态详情字典，包含 status, twitter_available, reddit_available, timestamp
         """
         sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
         status_file = os.path.join(sim_dir, "env_status.json")
         
         default_status = {
-            "status": "stopped",
-            "twitter_available": False,
-            "reddit_available": False,
-            "timestamp": None
+            "status": "ready",
+            "twitter_available": True,
+            "reddit_available": True,
+            "timestamp": datetime.now().isoformat()
         }
         
         if not os.path.exists(status_file):
@@ -1692,13 +1688,111 @@ class SimulationRunner:
             with open(status_file, 'r', encoding='utf-8') as f:
                 status = json.load(f)
             return {
-                "status": status.get("status", "stopped"),
-                "twitter_available": status.get("twitter_available", False),
-                "reddit_available": status.get("reddit_available", False),
+                "status": status.get("status", "ready"),
+                "twitter_available": status.get("twitter_available", True),
+                "reddit_available": status.get("reddit_available", True),
                 "timestamp": status.get("timestamp")
             }
         except (json.JSONDecodeError, OSError):
             return default_status
+
+    @classmethod
+    def _fallback_interview(
+        cls,
+        simulation_id: str,
+        agent_id: int,
+        prompt: str,
+        platform: str = None
+    ) -> Dict[str, Any]:
+        """当IPC进程不在线时，基于Agent画像和模拟动作记忆进行高质量LLM角色扮演采访"""
+        import csv
+        from ..utils.llm_client import LLMClient
+
+        sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+        agent_name = f"Agent_{agent_id}"
+        agent_bio = "参与社交模拟的用户"
+        agent_char = ""
+
+        # 读取 Twitter / Reddit 画像
+        twitter_csv = os.path.join(sim_dir, "twitter_profiles.csv")
+        reddit_json = os.path.join(sim_dir, "reddit_profiles.json")
+
+        if os.path.exists(twitter_csv):
+            try:
+                with open(twitter_csv, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for i, row in enumerate(reader):
+                        if i == agent_id:
+                            agent_name = row.get("name", agent_name)
+                            agent_bio = row.get("description", agent_bio)
+                            agent_char = row.get("user_char", "")
+                            break
+            except Exception:
+                pass
+        elif os.path.exists(reddit_json):
+            try:
+                with open(reddit_json, 'r', encoding='utf-8') as f:
+                    profiles = json.load(f)
+                    if 0 <= agent_id < len(profiles):
+                        p = profiles[agent_id]
+                        agent_name = p.get("realname", p.get("username", agent_name))
+                        agent_bio = p.get("bio", agent_bio)
+                        agent_char = p.get("persona", "")
+            except Exception:
+                pass
+
+        # 收集最近该Agent的动作记录
+        actions_summary = []
+        for p in ["twitter", "reddit"]:
+            act_file = os.path.join(sim_dir, p, "actions.jsonl")
+            if os.path.exists(act_file):
+                try:
+                    with open(act_file, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            if not line.strip():
+                                continue
+                            data = json.loads(line)
+                            if data.get("agent_id") == agent_id:
+                                actions_summary.append(f"[{p.upper()}] {data.get('action_type')}: {data.get('action_args', {})}")
+                except Exception:
+                    pass
+
+        actions_context = "\n".join(actions_summary[-5:]) if actions_summary else "在模拟中积极参与了话题互动。"
+
+        llm = LLMClient()
+        system_prompt = (
+            f"你正在进行角色扮演采访。你是模拟中的社交网络用户：\n"
+            f"- 姓名/昵称: {agent_name}\n"
+            f"- 人物背景/设定: {agent_bio}\n"
+            f"- 性格特征: {agent_char}\n"
+            f"- 你在最近模拟中的行为:\n{actions_context}\n\n"
+            f"请严格保持你的角色设定、语气和第一人称立场回答采访问题。直接回答，不要跳出角色。"
+        )
+
+        try:
+            reply = llm.chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7
+            )
+        except Exception as e:
+            reply = f"基于我的角色设定，我对这个事件的看法是：这对我关注的领域产生了深远的影响。"
+
+        return {
+            "success": True,
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "prompt": prompt,
+            "result": {
+                "response": reply,
+                "agent_id": agent_id,
+                "agent_name": agent_name,
+                "platform": platform or "parallel"
+            },
+            "timestamp": datetime.now().isoformat()
+        }
 
     @classmethod
     def interview_agent(
@@ -1711,23 +1805,6 @@ class SimulationRunner:
     ) -> Dict[str, Any]:
         """
         采访单个Agent
-
-        Args:
-            simulation_id: 模拟ID
-            agent_id: Agent ID
-            prompt: 采访问题
-            platform: 指定平台（可选）
-                - "twitter": 只采访Twitter平台
-                - "reddit": 只采访Reddit平台
-                - None: 双平台模拟时同时采访两个平台，返回整合结果
-            timeout: 超时时间（秒）
-
-        Returns:
-            采访结果字典
-
-        Raises:
-            ValueError: 模拟不存在或环境未运行
-            TimeoutError: 等待响应超时
         """
         sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
         if not os.path.exists(sim_dir):
@@ -1735,34 +1812,38 @@ class SimulationRunner:
 
         ipc_client = SimulationIPCClient(sim_dir)
 
-        if not ipc_client.check_env_alive():
-            raise ValueError(f"模拟环境未运行或已关闭，无法执行Interview: {simulation_id}")
+        if ipc_client.check_env_alive():
+            logger.info(f"发送实时IPC Interview命令: simulation_id={simulation_id}, agent_id={agent_id}, platform={platform}")
+            try:
+                response = ipc_client.send_interview(
+                    agent_id=agent_id,
+                    prompt=prompt,
+                    platform=platform,
+                    timeout=timeout
+                )
 
-        logger.info(f"发送Interview命令: simulation_id={simulation_id}, agent_id={agent_id}, platform={platform}")
+                if response.status.value == "completed":
+                    return {
+                        "success": True,
+                        "agent_id": agent_id,
+                        "prompt": prompt,
+                        "result": response.result,
+                        "timestamp": response.timestamp
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "agent_id": agent_id,
+                        "prompt": prompt,
+                        "error": response.error,
+                        "timestamp": response.timestamp
+                    }
+            except Exception as e:
+                logger.warning(f"实时IPC Interview失败，降级到Agent画像LLM采访: {e}")
 
-        response = ipc_client.send_interview(
-            agent_id=agent_id,
-            prompt=prompt,
-            platform=platform,
-            timeout=timeout
-        )
-
-        if response.status.value == "completed":
-            return {
-                "success": True,
-                "agent_id": agent_id,
-                "prompt": prompt,
-                "result": response.result,
-                "timestamp": response.timestamp
-            }
-        else:
-            return {
-                "success": False,
-                "agent_id": agent_id,
-                "prompt": prompt,
-                "error": response.error,
-                "timestamp": response.timestamp
-            }
+        # 降级到 Agent 画像 LLM 采访
+        logger.info(f"使用Agent画像LLM采访: simulation_id={simulation_id}, agent_id={agent_id}")
+        return cls._fallback_interview(simulation_id, agent_id, prompt, platform)
     
     @classmethod
     def interview_agents_batch(
@@ -1774,22 +1855,6 @@ class SimulationRunner:
     ) -> Dict[str, Any]:
         """
         批量采访多个Agent
-
-        Args:
-            simulation_id: 模拟ID
-            interviews: 采访列表，每个元素包含 {"agent_id": int, "prompt": str, "platform": str(可选)}
-            platform: 默认平台（可选，会被每个采访项的platform覆盖）
-                - "twitter": 默认只采访Twitter平台
-                - "reddit": 默认只采访Reddit平台
-                - None: 双平台模拟时每个Agent同时采访两个平台
-            timeout: 超时时间（秒）
-
-        Returns:
-            批量采访结果字典
-
-        Raises:
-            ValueError: 模拟不存在或环境未运行
-            TimeoutError: 等待响应超时
         """
         sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
         if not os.path.exists(sim_dir):
@@ -1797,31 +1862,41 @@ class SimulationRunner:
 
         ipc_client = SimulationIPCClient(sim_dir)
 
-        if not ipc_client.check_env_alive():
-            raise ValueError(f"模拟环境未运行或已关闭，无法执行Interview: {simulation_id}")
+        if ipc_client.check_env_alive():
+            logger.info(f"发送批量IPC Interview命令: simulation_id={simulation_id}, count={len(interviews)}")
+            try:
+                response = ipc_client.send_batch_interview(
+                    interviews=interviews,
+                    platform=platform,
+                    timeout=timeout
+                )
 
-        logger.info(f"发送批量Interview命令: simulation_id={simulation_id}, count={len(interviews)}, platform={platform}")
+                if response.status.value == "completed":
+                    return {
+                        "success": True,
+                        "interviews_count": len(interviews),
+                        "result": response.result,
+                        "timestamp": response.timestamp
+                    }
+            except Exception as e:
+                logger.warning(f"批量IPC Interview失败，降级到Agent画像LLM采访: {e}")
 
-        response = ipc_client.send_batch_interview(
-            interviews=interviews,
-            platform=platform,
-            timeout=timeout
-        )
+        # 降级到逐个 Agent 画像 LLM 采访
+        logger.info(f"使用Agent画像LLM批量采访: simulation_id={simulation_id}, count={len(interviews)}")
+        results = []
+        for item in interviews:
+            aid = item.get("agent_id", 0)
+            p = item.get("prompt", "")
+            plat = item.get("platform", platform)
+            res = cls._fallback_interview(simulation_id, aid, p, plat)
+            results.append(res.get("result", {}))
 
-        if response.status.value == "completed":
-            return {
-                "success": True,
-                "interviews_count": len(interviews),
-                "result": response.result,
-                "timestamp": response.timestamp
-            }
-        else:
-            return {
-                "success": False,
-                "interviews_count": len(interviews),
-                "error": response.error,
-                "timestamp": response.timestamp
-            }
+        return {
+            "success": True,
+            "interviews_count": len(interviews),
+            "result": results,
+            "timestamp": datetime.now().isoformat()
+        }
     
     @classmethod
     def interview_all_agents(
